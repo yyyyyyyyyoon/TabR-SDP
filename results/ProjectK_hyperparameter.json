@@ -1,0 +1,15 @@
+{
+  "dataset": "ProjectK",
+  "adjusted_score": 0.9844958727315154,
+  "PD": 0.9871245247187075,
+  "PF": 0.005257303974384136,
+  "FIR": 0.4973628226577806,
+  "Balance": 0.9893621084436468,
+  "params": {
+    "n_epochs": 23,
+    "d_main": 64,
+    "encoder_n_blocks": 0,
+    "context_size": 128,
+    "predictor_n_blocks": 1
+  }
+}

@@ -137,7 +137,7 @@ if __name__ == '__main__':
         print(f"    Balance: {best.user_attrs['Balance']:.4f}")
         print(f"    Params: {best.params}")
 
-        with open(f"results/{dataset_name}_10fold_50epoch.json", "w") as f:
+        with open(f"results/{dataset_name}_hyperparameter.json", "w") as f:
             json.dump({
                 "dataset": dataset_name,
                 "adjusted_score": best.value,

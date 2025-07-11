@@ -1,0 +1,15 @@
+{
+  "dataset": "zxing",
+  "adjusted_score": 0.7749636644327029,
+  "PD": 0.8923143807453757,
+  "PF": 0.23470143262534568,
+  "FIR": 0.3663440950365615,
+  "Balance": 0.814753330347877,
+  "params": {
+    "n_epochs": 34,
+    "d_main": 256,
+    "encoder_n_blocks": 1,
+    "context_size": 96,
+    "predictor_n_blocks": 3
+  }
+}

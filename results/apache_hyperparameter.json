@@ -1,0 +1,15 @@
+{
+  "dataset": "apache",
+  "adjusted_score": 0.6211886724386724,
+  "PD": 0.7675396825396825,
+  "PF": 0.2927020202020202,
+  "FIR": 0.31799603174603175,
+  "Balance": 0.7019997665350253,
+  "params": {
+    "n_epochs": 31,
+    "d_main": 128,
+    "encoder_n_blocks": 2,
+    "context_size": 128,
+    "predictor_n_blocks": 3
+  }
+}
