@@ -30,6 +30,7 @@ import torch
 from sklearn.metrics import confusion_matrix
 from math import sqrt
 from typing import Dict, Any
+import json
 
 KWArgs = Dict[str, Any]
 os.environ["LOKY_MAX_CPU_COUNT"] = "2"
@@ -67,6 +68,7 @@ class Model(nn.Module):
         dropout1: Union[float, Literal['dropout0']],
         normalization: str,
         activation: str,
+        distance_metric="IP",
         #
         # The following options should be used only when truly needed.
         memory_efficient: bool = False,
@@ -79,6 +81,9 @@ class Model(nn.Module):
         if encoder_n_blocks == 0:
             assert not mixer_normalization
         super().__init__()
+
+        self.distance_metric = distance_metric  # 거리 계산 방식 변수 설정
+        self.search_index = None  # 검색 인덱스 초기화
 
         # normalization 클래스 가져오기
         Normalization = getattr(nn, normalization)
@@ -197,6 +202,37 @@ class Model(nn.Module):
         k = self.K(x if self.normalization is None else self.normalization(x))
         return x, k
 
+    def build_search_index(self, d_main, device):
+        # 거리 방식에 따라 FAISS 인덱스 생성
+        if self.distance_metric == "L2":
+            return (
+                faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), d_main)
+                if device.type == 'cuda'
+                else faiss.IndexFlatL2(d_main)
+            )
+        elif self.distance_metric == "IP":
+            return (
+                faiss.GpuIndexFlatIP(faiss.StandardGpuResources(), d_main)
+                if device.type == 'cuda'
+                else faiss.IndexFlatIP(d_main)
+            )
+        else:
+            raise ValueError(f"지원하지 않는 거리 방식: {self.distance_metric}")
+
+    def compute_similarity(self, k, context_k):
+        if self.distance_metric == "L2":
+            # L2 거리 기반 유사도
+            return (
+                    -k.square().sum(-1, keepdim=True)
+                    + (2 * (k[..., None, :] @ context_k.transpose(-1, -2))).squeeze(-2)
+                    - context_k.square().sum(-1)
+            )
+        elif self.distance_metric == "IP":
+            # 내적 기반 유사도 (Cosine 유사도도 정규화 후 여기서 가능)
+            return (k[..., None, :] @ context_k.transpose(-1, -2)).squeeze(-2)
+        else:
+            raise ValueError(f"지원하지 않는 거리 방식: {self.distance_metric}")
+
     def forward(
         self,
         x_: dict[str, Tensor],
@@ -234,18 +270,15 @@ class Model(nn.Module):
         device = k.device
         with torch.no_grad():
             if self.search_index is None:
-                self.search_index = (
-                    faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), d_main)
-                    if device.type == 'cuda'
-                    else faiss.IndexFlatL2(d_main)
-                )
+                self.search_index = self.build_search_index(d_main, device) #조건문 기반 인덱스 생성
             self.search_index.reset()
-            self.search_index.add(candidate_k)  # type: ignore[code]
+            self.search_index.add(candidate_k)
             distances: Tensor
             context_idx: Tensor
-            distances, context_idx = self.search_index.search(  # type: ignore[code]
+            distances, context_idx = self.search_index.search(
                 k, context_size + (1 if is_train else 0)
-            )
+            ) # L2/IP 동일 방식 사용, 유사도 수식만 다름
+
             if is_train:
                 distances[
                     context_idx == torch.arange(batch_size, device=device)[:, None]
@@ -278,11 +311,8 @@ class Model(nn.Module):
             )[1].reshape(batch_size, context_size, -1)
         else:
             context_k = candidate_k[context_idx]
-        similarities = (
-            -k.square().sum(-1, keepdim=True)
-            + (2 * (k[..., None, :] @ context_k.transpose(-1, -2))).squeeze(-2)
-            - context_k.square().sum(-1)
-        )
+
+        similarities = self.compute_similarity(k, context_k)
         probs = F.softmax(similarities, dim=-1)
         probs = self.dropout(probs)
 
@@ -310,9 +340,7 @@ class Config:
     patience: Optional[int]
     n_epochs: Union[int, float]
 
-context_size_default = 96
-
-def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_y_tensor, context_size=context_size_default, eval_batch_size=32):
+def evaluate(model, X_eval_tensor, y_eval_tensor, context_size, candidate_X_tensor, candidate_y_tensor, eval_batch_size=32):
     model.eval()
     preds = []
     with torch.inference_mode():
@@ -326,9 +354,9 @@ def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_
                     output = model(
                         x_=x_,
                         y=None,
+                        context_size=context_size,
                         candidate_x_=candidate_x_,
                         candidate_y=candidate_y,
-                        context_size=context_size,
                         is_train=False,
                     )
                     preds.append(output.cpu())
@@ -355,6 +383,18 @@ def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_
 
         return {'PD': PD, 'PF': PF, 'FIR': FIR, 'Balance': Balance}
 
+def load_best_params(result_json_path):
+    with open(result_json_path, "r") as f:
+        result = json.load(f)
+    params = result.get("params", {})
+    # 필요한 파라미터 모두 추출
+    n_epochs = params.get("n_epochs")
+    d_main = params.get("d_main")
+    encoder_n_blocks = params.get("encoder_n_blocks")
+    context_size = params.get("context_size")
+    predictor_n_blocks = params.get("predictor_n_blocks")
+    return n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks
+
 def main() -> None:
     if len(sys.argv) > 1:
         csv_path = sys.argv[1]
@@ -364,6 +404,9 @@ def main() -> None:
 
     splits = preprocess_data(csv_path)
     dataset_name = os.path.splitext(os.path.basename(csv_path))[0]
+
+    param_json_path = f"results/{dataset_name}_hyperparameter.json"
+    n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks = load_best_params(param_json_path)
 
     # 전처리된 데이터 가져오기
     if dataset_name not in splits:
@@ -375,7 +418,6 @@ def main() -> None:
 
     n_splits = 10
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-
     all_metrics = []
 
     for fold, (train_idx, test_idx) in enumerate(kf.split(X_all)):
@@ -398,10 +440,10 @@ def main() -> None:
             cat_cardinalities=[],
             n_classes=2,
             num_embeddings=None,  # 또는 필요한 딕셔너리 제공
-            d_main= 365,
+            d_main=d_main, # JSON의 값
             d_multiplier=2.0,
-            encoder_n_blocks=3,
-            predictor_n_blocks=1,
+            encoder_n_blocks=encoder_n_blocks, # JSON의 값
+            predictor_n_blocks=predictor_n_blocks, # JSON의 값
             mixer_normalization='auto',
             context_dropout=0.1,
             dropout0=0.2,
@@ -410,37 +452,34 @@ def main() -> None:
             activation='ReLU',
             memory_efficient=False,
             candidate_encoding_batch_size=None,
+            distance_metric="IP"
         ).to(device)
 
         # 모델 훈련
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         loss_fn = nn.CrossEntropyLoss()
 
-        for epoch in range(50):
+        for epoch in range(n_epochs):
             model.train()
-            epoch_loss = 0
             for batch_idx in lib.make_random_batches(len(y_tr_tensor), 32, device):
                 batch_x =  X_tr_tensor[batch_idx]
                 batch_y = y_tr_tensor[batch_idx]
-
                 x_ = {'num': batch_x}
                 candidate_x_ = {'num': X_tr_tensor}
                 candidate_y = y_tr_tensor
 
                 optimizer.zero_grad()
-                output = model(x_, batch_y, candidate_x_, candidate_y, context_size=context_size_default, is_train=True)
+                output = model(x_, batch_y, candidate_x_, candidate_y, context_size=context_size, is_train=True)
                 loss = loss_fn(output, batch_y)
                 loss.backward()
                 optimizer.step()
-                epoch_loss += loss.item()
 
         # fold별 검증 결과 저장
-        final_metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor,
-                                 context_size=context_size_default)
-        all_metrics.append(final_metrics)
+        metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor, context_size=context_size)
+        all_metrics.append(metrics)
 
     # fold별 마지막 검증 결과 평균 출력
-    print("\n=== [최종 평균 성능] ===")
+    print(f"== [{dataset_name}] (내적:IP) 평균성능 ==")
     print(pd.DataFrame(all_metrics).mean())
 
 
