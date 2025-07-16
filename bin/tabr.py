@@ -340,7 +340,7 @@ class Config:
     patience: Optional[int]
     n_epochs: Union[int, float]
 
-def evaluate(model, X_eval_tensor, y_eval_tensor, context_size, candidate_X_tensor, candidate_y_tensor, eval_batch_size=32):
+def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_y_tensor, context_size, eval_batch_size=32):
     model.eval()
     preds = []
     with torch.inference_mode():
@@ -354,9 +354,9 @@ def evaluate(model, X_eval_tensor, y_eval_tensor, context_size, candidate_X_tens
                     output = model(
                         x_=x_,
                         y=None,
-                        context_size=context_size,
                         candidate_x_=candidate_x_,
                         candidate_y=candidate_y,
+                        context_size=context_size,
                         is_train=False,
                     )
                     preds.append(output.cpu())
@@ -395,23 +395,13 @@ def load_best_params(result_json_path):
     predictor_n_blocks = params.get("predictor_n_blocks")
     return n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks
 
-def main() -> None:
-    if len(sys.argv) > 1:
-        csv_path = sys.argv[1]
-    else:
-        print("Error: No CSV file path provided.")
-        sys.exit(1)
-
-    splits = preprocess_data(csv_path)
+def run_experiment_for_dataset(csv_path, param_json_path):
     dataset_name = os.path.splitext(os.path.basename(csv_path))[0]
-
-    param_json_path = f"results/{dataset_name}_hyperparameter.json"
     n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks = load_best_params(param_json_path)
-
-    # 전처리된 데이터 가져오기
+    splits = preprocess_data(csv_path)
     if dataset_name not in splits:
         print(f"Error: Dataset '{dataset_name}' not found in splits.")
-        sys.exit(1)
+        return None
 
     X_all = numpy.array(splits[dataset_name]["X_train"])
     y_all = numpy.array(splits[dataset_name]["y_train"], dtype=int)
@@ -478,10 +468,52 @@ def main() -> None:
         metrics = evaluate(model, X_te_tensor, y_te_tensor, X_tr_tensor, y_tr_tensor, context_size=context_size)
         all_metrics.append(metrics)
 
-    # fold별 마지막 검증 결과 평균 출력
-    print(f"== [{dataset_name}] (내적:IP) 평균성능 ==")
-    print(pd.DataFrame(all_metrics).mean())
+    avg = pd.DataFrame(all_metrics).mean()
 
+    # fold별 마지막 검증 결과 평균 출력
+    print(f"== [{dataset_name}] 10-Fold 평균성능 ==")
+    print(avg)
+    return avg
+
+
+def main() -> None:
+    data_dir = "data"
+    result_dir = "results"
+    all_results = {}
+
+    # 특정 CSV 선택
+    if len(sys.argv) > 1:
+        target_csv = os.path.basename(sys.argv[1])
+        print(f"[INFO] 선택된 데이터셋: {target_csv}")
+    else:
+        target_csv = None
+
+    for fname in os.listdir(data_dir):
+        if not fname.endswith(".csv"):
+            continue
+        # 특정 CSV 실행
+        if target_csv is not None and fname != target_csv:
+            continue
+
+        csv_path = os.path.join(data_dir, fname)
+        dataset_name = os.path.splitext(fname)[0]
+        param_json_path = os.path.join(result_dir, f"{dataset_name}_hyperparameter.json")
+
+        if not os.path.exists(param_json_path):
+            print(f"[SKIP] '{dataset_name}' 하이퍼파라미터 JSON 없음")
+            continue
+
+        print(f"\n=== {dataset_name} 실험 시작 ===")
+        avg_metrics = run_experiment_for_dataset(csv_path, param_json_path)
+
+        if avg_metrics is not None:
+            all_results[dataset_name] = avg_metrics
+
+    result_df = pd.DataFrame(all_results).T
+    print(result_df)
+
+    # 결과 저장
+    result_df.to_csv("results/all_results_IP.csv")
 
 if __name__ == '__main__':
     main()
