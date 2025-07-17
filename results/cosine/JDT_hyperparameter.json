@@ -1,0 +1,15 @@
+{
+  "dataset": "JDT",
+  "adjusted_score": 0.9203717840890887,
+  "PD": 0.969921479962548,
+  "PF": 0.09909939174691848,
+  "FIR": 0.448574872377255,
+  "Balance": 0.9246458444281667,
+  "params": {
+    "n_epochs": 89,
+    "d_main": 256,
+    "encoder_n_blocks": 2,
+    "context_size": 96,
+    "predictor_n_blocks": 3
+  }
+}

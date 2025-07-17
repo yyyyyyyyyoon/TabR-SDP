@@ -1,0 +1,15 @@
+{
+  "dataset": "ProjectA",
+  "adjusted_score": 0.9937971670853767,
+  "PD": 0.9944966046006616,
+  "PF": 0.0013988750305698214,
+  "FIR": 0.4993244833592242,
+  "Balance": 0.9951193577734285,
+  "params": {
+    "n_epochs": 100,
+    "d_main": 365,
+    "encoder_n_blocks": 1,
+    "context_size": 128,
+    "predictor_n_blocks": 3
+  }
+}

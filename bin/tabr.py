@@ -68,7 +68,7 @@ class Model(nn.Module):
         dropout1: Union[float, Literal['dropout0']],
         normalization: str,
         activation: str,
-        distance_metric="IP",
+        distance_metric="cosine",
         #
         # The following options should be used only when truly needed.
         memory_efficient: bool = False,
@@ -204,31 +204,24 @@ class Model(nn.Module):
 
     def build_search_index(self, d_main, device):
         # 거리 방식에 따라 FAISS 인덱스 생성
-        if self.distance_metric == "L2":
-            return (
-                faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), d_main)
-                if device.type == 'cuda'
-                else faiss.IndexFlatL2(d_main)
-            )
-        elif self.distance_metric == "IP":
-            return (
-                faiss.GpuIndexFlatIP(faiss.StandardGpuResources(), d_main)
-                if device.type == 'cuda'
-                else faiss.IndexFlatIP(d_main)
-            )
+        if self.distance_metric in ["IP", "cosine"]:
+            index_class = faiss.GpuIndexFlatIP if device.type == 'cuda' else faiss.IndexFlatIP
+        elif self.distance_metric == "L2":
+            index_class = faiss.GpuIndexFlatL2 if device.type == 'cuda' else faiss.IndexFlatL2
         else:
             raise ValueError(f"지원하지 않는 거리 방식: {self.distance_metric}")
+        return index_class(faiss.StandardGpuResources() if device.type == 'cuda' else d_main, d_main)
 
     def compute_similarity(self, k, context_k):
+        # L2 거리 기반 유사도
         if self.distance_metric == "L2":
-            # L2 거리 기반 유사도
             return (
                     -k.square().sum(-1, keepdim=True)
                     + (2 * (k[..., None, :] @ context_k.transpose(-1, -2))).squeeze(-2)
                     - context_k.square().sum(-1)
             )
-        elif self.distance_metric == "IP":
-            # 내적 기반 유사도 (Cosine 유사도도 정규화 후 여기서 가능)
+        # 내적 기반 유사도
+        elif self.distance_metric in ["IP", "cosine"]:
             return (k[..., None, :] @ context_k.transpose(-1, -2)).squeeze(-2)
         else:
             raise ValueError(f"지원하지 않는 거리 방식: {self.distance_metric}")
@@ -268,6 +261,12 @@ class Model(nn.Module):
 
         batch_size, d_main = k.shape
         device = k.device
+
+        # cosine 유사도 (정규화)
+        if self.distance_metric == "cosine":
+            k = F.normalize(k, dim=-1)
+            candidate_k = F.normalize(candidate_k, dim=-1)
+
         with torch.no_grad():
             if self.search_index is None:
                 self.search_index = self.build_search_index(d_main, device) #조건문 기반 인덱스 생성
@@ -442,7 +441,7 @@ def run_experiment_for_dataset(csv_path, param_json_path):
             activation='ReLU',
             memory_efficient=False,
             candidate_encoding_batch_size=None,
-            distance_metric="IP"
+            distance_metric="cosine"
         ).to(device)
 
         # 모델 훈련
@@ -513,7 +512,7 @@ def main() -> None:
     print(result_df)
 
     # 결과 저장
-    result_df.to_csv("results/all_results_IP.csv")
+    result_df.to_csv("results/all_results_cosine.csv")
 
 if __name__ == '__main__':
     main()

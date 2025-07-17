@@ -1,0 +1,15 @@
+{
+  "dataset": "safe",
+  "adjusted_score": 0.7541666666666668,
+  "PD": 0.8,
+  "PF": 0.09166666666666666,
+  "FIR": 0.38666666666666666,
+  "Balance": 0.7937605221539237,
+  "params": {
+    "n_epochs": 47,
+    "d_main": 128,
+    "encoder_n_blocks": 1,
+    "context_size": 32,
+    "predictor_n_blocks": 2
+  }
+}

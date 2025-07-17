@@ -60,6 +60,7 @@ def train_and_evaluate_model(csv_path, d_main, encoder_n_blocks, context_size, p
             activation='ReLU',
             memory_efficient=False,
             candidate_encoding_batch_size=None,
+            distance_metric="cosine"
         ).to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -119,7 +120,7 @@ def objective(trial, csv_path):
 
 if __name__ == '__main__':
     data_root = "data"
-    dataset_paths = glob.glob(os.path.join(data_root, "*", "*.csv"))
+    dataset_paths = glob.glob(os.path.join(data_root, "*.csv"))
     os.makedirs("results", exist_ok=True)
 
     for csv_path in dataset_paths:
@@ -137,7 +138,7 @@ if __name__ == '__main__':
         print(f"    Balance: {best.user_attrs['Balance']:.4f}")
         print(f"    Params: {best.params}")
 
-        with open(f"results/{dataset_name}_hyperparameter.json", "w") as f:
+        with open(f"results/cosine/{dataset_name}_hyperparameter.json", "w") as f:
             json.dump({
                 "dataset": dataset_name,
                 "adjusted_score": best.value,
