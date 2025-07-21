@@ -68,7 +68,7 @@ class Model(nn.Module):
         dropout1: Union[float, Literal['dropout0']],
         normalization: str,
         activation: str,
-        distance_metric="cosine",
+        distance_metric="IP",
         #
         # The following options should be used only when truly needed.
         memory_efficient: bool = False,
@@ -441,7 +441,7 @@ def run_experiment_for_dataset(csv_path, param_json_path):
             activation='ReLU',
             memory_efficient=False,
             candidate_encoding_batch_size=None,
-            distance_metric="cosine"
+            distance_metric="IP"
         ).to(device)
 
         # 모델 훈련
@@ -512,7 +512,7 @@ def main() -> None:
     print(result_df)
 
     # 결과 저장
-    result_df.to_csv("results/all_results_cosine.csv")
+    result_df.to_csv("results/all_results_IP.csv")
 
 if __name__ == '__main__':
     main()
