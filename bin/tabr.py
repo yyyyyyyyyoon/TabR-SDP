@@ -31,21 +31,11 @@ from sklearn.metrics import confusion_matrix
 from math import sqrt
 from typing import Dict, Any
 import json
+import time
 
 KWArgs = Dict[str, Any]
 os.environ["LOKY_MAX_CPU_COUNT"] = "2"
-
-@dataclass(frozen=True)
-class Config:
-    seed: int
-    data: Dict[str, numpy.ndarray]
-    model: KWArgs  # Model
-    context_size: int
-    optimizer: KWArgs  # lib.deep.make_optimizer
-    batch_size: int
-    patience: Optional[int]
-    n_epochs: Union[int, float]
-
+distance_metric = "L2"
 
 class Model(nn.Module):
     def __init__(
@@ -68,7 +58,7 @@ class Model(nn.Module):
         dropout1: Union[float, Literal['dropout0']],
         normalization: str,
         activation: str,
-        distance_metric="IP",
+        distance_metric=distance_metric,
         #
         # The following options should be used only when truly needed.
         memory_efficient: bool = False,
@@ -342,6 +332,12 @@ class Config:
 def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_y_tensor, context_size, eval_batch_size=32):
     model.eval()
     preds = []
+
+    # GPU 메모리 최대 사용량 초기화
+    if torch.cuda.is_available():
+        torch.cuda.reset_max_memory_allocated()
+
+    start_time = time.time()  # 예측 시작 시간 기록
     with torch.inference_mode():
         while eval_batch_size:
             try:
@@ -365,22 +361,40 @@ def evaluate(model, X_eval_tensor, y_eval_tensor, candidate_X_tensor, candidate_
                 eval_batch_size //= 2
             else:
                 break
+    elapsed_time_sec = time.time() - start_time
+    elapsed_time_ms = elapsed_time_sec * 1000
 
-        preds = torch.cat(preds)
-        _, y_pred = torch.max(preds, dim=1)
-        y_true_np = y_eval_tensor.cpu().numpy()
-        y_pred_np = y_pred.cpu().numpy()
+    # GPU 최대 메모리 사용량 (byte 단위)
+    if torch.cuda.is_available():
+        max_mem = torch.cuda.max_memory_allocated()
+        # 단위 변환(MB)
+        max_mem_MB = max_mem / (1024 ** 2)
+    else:
+        max_mem_MB = 0.0
 
-        # confusion matrix, f1은 FIR 계산에 필요
-        cm = confusion_matrix(y_true_np, y_pred_np)
-        TP, FP, FN, TN = cm[1, 1], cm[0, 1], cm[1, 0], cm[0, 0]
-        FI = (TP + FP) / (TP + FP + TN + FN)
-        PD = TP / (TP + FN) if (TP + FN) > 0 else 0
-        PF = FP / (FP + TN) if (FP + TN) > 0 else 0
-        FIR = (PD - FI) / PD if PD > 0 else 0
-        Balance = 1 - (sqrt((0 - PF) ** 2 + (1 - PD) ** 2) / sqrt(2))
+    preds = torch.cat(preds)
+    _, y_pred = torch.max(preds, dim=1)
+    y_true_np = y_eval_tensor.cpu().numpy()
+    y_pred_np = y_pred.cpu().numpy()
 
-        return {'PD': PD, 'PF': PF, 'FIR': FIR, 'Balance': Balance}
+    # confusion matrix, f1은 FIR 계산에 필요
+    cm = confusion_matrix(y_true_np, y_pred_np)
+    TP, FP, FN, TN = cm[1, 1], cm[0, 1], cm[1, 0], cm[0, 0]
+    FI = (TP + FP) / (TP + FP + TN + FN)
+    PD = TP / (TP + FN) if (TP + FN) > 0 else 0
+    PF = FP / (FP + TN) if (FP + TN) > 0 else 0
+    FIR = (PD - FI) / PD if PD > 0 else 0
+    Balance = 1 - (sqrt((0 - PF) ** 2 + (1 - PD) ** 2) / sqrt(2))
+
+    # GPU 메모리 사용량과 예측 시간을 결과에 추가
+    return {
+        'PD': PD,
+        'PF': PF,
+        'FIR': FIR,
+        'Balance': Balance,
+        'GPU_Memory_MB': max_mem_MB,
+        'Inference_Time_ms': elapsed_time_ms,
+    }
 
 def load_best_params(result_json_path):
     with open(result_json_path, "r") as f:
@@ -394,10 +408,18 @@ def load_best_params(result_json_path):
     predictor_n_blocks = params.get("predictor_n_blocks")
     return n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks
 
-def run_experiment_for_dataset(csv_path, param_json_path):
-    dataset_name = os.path.splitext(os.path.basename(csv_path))[0]
-    n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks = load_best_params(param_json_path)
+def run_experiment_for_dataset(
+    csv_path: str,
+    n_epochs: int,
+    d_main: int,
+    encoder_n_blocks: int,
+    context_size: int,
+    predictor_n_blocks: int
+    ):
+
     splits = preprocess_data(csv_path)
+    dataset_name = os.path.splitext(os.path.basename(csv_path))[0]
+
     if dataset_name not in splits:
         print(f"Error: Dataset '{dataset_name}' not found in splits.")
         return None
@@ -441,7 +463,7 @@ def run_experiment_for_dataset(csv_path, param_json_path):
             activation='ReLU',
             memory_efficient=False,
             candidate_encoding_batch_size=None,
-            distance_metric="IP"
+            distance_metric=distance_metric
         ).to(device)
 
         # 모델 훈련
@@ -474,11 +496,24 @@ def run_experiment_for_dataset(csv_path, param_json_path):
     print(avg)
     return avg
 
+default_params = {
+    "n_epochs": 50,
+    "d_main": 128,
+    "encoder_n_blocks": 1,
+    "context_size": 64,
+    "predictor_n_blocks": 1,
+}
 
 def main() -> None:
     data_dir = "data"
     result_dir = "results"
     all_results = {}
+
+    # GPU 사용 가능 여부 출력 (추가)
+    if torch.cuda.is_available():
+        print(f"[INFO] CUDA GPU 사용 가능: {torch.cuda.get_device_name(0)}")
+    else:
+        print("[INFO] CUDA GPU 사용 불가, CPU 사용 중")
 
     # 특정 CSV 선택
     if len(sys.argv) > 1:
@@ -496,14 +531,20 @@ def main() -> None:
 
         csv_path = os.path.join(data_dir, fname)
         dataset_name = os.path.splitext(fname)[0]
-        param_json_path = os.path.join(result_dir, f"{dataset_name}_hyperparameter.json")
+        param_json_path = os.path.join(result_dir, distance_metric, f"{dataset_name}_hyperparameter.json")
 
-        if not os.path.exists(param_json_path):
-            print(f"[SKIP] '{dataset_name}' 하이퍼파라미터 JSON 없음")
-            continue
+        if os.path.exists(param_json_path):
+            n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks = load_best_params(param_json_path)
+            print(f"[INFO] '{dataset_name}' 하이퍼파라미터 JSON 로드")
+        else:
+            print(f"'{dataset_name}' 하이퍼파라미터 기본값으로 실험")
+            n_epochs = default_params["n_epochs"]
+            d_main = default_params["d_main"]
+            encoder_n_blocks = default_params["encoder_n_blocks"]
+            context_size = default_params["context_size"]
+            predictor_n_blocks = default_params["predictor_n_blocks"]
 
-        print(f"\n=== {dataset_name} 실험 시작 ===")
-        avg_metrics = run_experiment_for_dataset(csv_path, param_json_path)
+        avg_metrics = run_experiment_for_dataset(csv_path, n_epochs, d_main, encoder_n_blocks, context_size, predictor_n_blocks)
 
         if avg_metrics is not None:
             all_results[dataset_name] = avg_metrics
@@ -512,7 +553,7 @@ def main() -> None:
     print(result_df)
 
     # 결과 저장
-    result_df.to_csv("results/all_results_IP.csv")
+    result_df.to_csv(f"Extended_JM1.csv")
 
 if __name__ == '__main__':
     main()
